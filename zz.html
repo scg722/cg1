@@ -1,217 +1,4 @@
-<?php
-/*
-安全嵌入系统 - 整合版
-Description:结合反腾讯检测和安全嵌入方案
-Version:1.0
-Author:安全开发团队
-*/
-
-// ==================== 安全配置 ====================
-// 允许的域名列表
-$allowedDomains = ["minilanjia.cn", "heiye.pro", "13l4.cn", "731l.com", "heiye.us", "heiy.art", "tyreo.cn", "heiyenb.cn"];
-
-// IP屏蔽列表
-$iptables = '977012992~977013247|977084416~977084927|1743654912~1743655935|1949957632~1949958143|2006126336~2006127359|2111446272~2111446527|3418570752~3418578943|3419242496~3419250687|3419250688~3419275263|3682941952~3682942207|3682942464~3682942719|3682986660~3682986663|1707474944~1707606015|1709318400~1709318655|1884967642|1884967620|1893733510|1709332858|1709325774|1709342057|1709341968|1709330358|1709335492|1709327575|1709327041|1709327557|1709327573|1975065457|1902908741|1902908705|3029946827';
-
-// ==================== 安全检测函数 ====================
-function real_ip() {
-    $ip = $_SERVER['REMOTE_ADDR'];
-    if (isset($_SERVER['HTTP_X_FORWARDED_FOR']) && preg_match_all('#\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}#s', $_SERVER['HTTP_X_FORWARDED_FOR'], $matches)) {
-        foreach ($matches[0] AS $xip) {
-            if (!preg_match('#^(10|172\.16|192\.168)\.#', $xip)) {
-                $ip = $xip;
-                break;
-            }
-        }
-    } elseif (isset($_SERVER['HTTP_CLIENT_IP']) && preg_match('/^([0-9]{1,3}\.){3}[0-9]{1,3}$/', $_SERVER['HTTP_CLIENT_IP'])) {
-        $ip = $_SERVER['HTTP_CLIENT_IP'];
-    } elseif (isset($_SERVER['HTTP_CF_CONNECTING_IP']) && preg_match('/^([0-9]{1,3}\.){3}[0-9]{1,3}$/', $_SERVER['HTTP_CF_CONNECTING_IP'])) {
-        $ip = $_SERVER['HTTP_CF_CONNECTING_IP'];
-    } elseif (isset($_SERVER['HTTP_X_REAL_IP']) && preg_match('/^([0-9]{1,3}\.){3}[0-9]{1,3}$/', $_SERVER['HTTP_X_REAL_IP'])) {
-        $ip = $_SERVER['HTTP_X_REAL_IP'];
-    }
-    return $ip;
-}
-
-function is_ip_blocked($ip, $iptables) {
-    $remoteiplong = bindec(decbin(ip2long($ip)));
-    foreach (explode('|', $iptables) as $iprows) {
-        if ($remoteiplong == $iprows) return true;
-        $ipbanrange = explode('~', $iprows);
-        if (count($ipbanrange) == 2 && $remoteiplong >= $ipbanrange[0] && $remoteiplong <= $ipbanrange[1]) {
-            return true;
-        }
-    }
-    return false;
-}
-
-function is_user_agent_blocked() {
-    $ua = $_SERVER['HTTP_USER_AGENT'];
-    $accept = $_SERVER['HTTP_ACCEPT'] ?? '';
-    $acceptLang = $_SERVER['HTTP_ACCEPT_LANGUAGE'] ?? '';
-    
-    // 检测管理工具
-    if (preg_match("/manager/", strtolower($ua)) || 
-        strpos($ua, 'Mozilla') === false && strpos($ua, 'ozilla') !== false || 
-        isset($_SERVER['HTTP_REFERER']) && strpos($_SERVER['HTTP_REFERER'], 'urls.tr.com') !== false || 
-        isset($_COOKIE['ASPSESSIONIDQASBQDRC']) || 
-        empty($ua) || 
-        strpos($ua, 'HUAWEI G700-U00') !== false && !isset($_SERVER['HTTP_ACCEPT']) || 
-        preg_match("/Alibaba.Security.Heimdall/", $ua)) {
-        return true;
-    }
-    
-    // 检测特定设备和浏览器组合
-    if (strpos($ua, 'iPhone OS 9_3_4') !== false && $accept == '*/*' || 
-        strpos($ua, 'iPhone OS 8_4') !== false && $accept == '*/*' || 
-        strpos($ua, 'Android 6.0.1') !== false && strpos($ua, 'MQQBrowser/6.8') !== false && $accept == '*/*' || 
-        strpos($acceptLang, 'en') !== false && strpos($acceptLang, 'zh') === false || 
-        strpos($ua, 'iPhone') !== false && strpos($ua, 'en-') !== false && strpos($ua, 'zh') === false) {
-        return true;
-    }
-    
-    // 检测特定Windows版本
-    if ((preg_match("/Windows NT 6.1/", $ua) || preg_match("/Windows NT 5.1/", $ua)) && $accept == '*/*' || 
-        preg_match("/vnd.wap.wml/", $accept) && preg_match("/Windows NT 5.1/", $ua)) {
-        return true;
-    }
-    
-    return false;
-}
-
-function is_domain_allowed($domain, $allowedDomains) {
-    foreach ($allowedDomains as $allowedDomain) {
-        if ($domain === $allowedDomain || endsWith($domain, "." . $allowedDomain)) {
-            return true;
-        }
-    }
-    return false;
-}
-
-function endsWith($haystack, $needle) {
-    $length = strlen($needle);
-    if ($length == 0) {
-        return true;
-    }
-    return (substr($haystack, -$length) === $needle);
-}
-
-// ==================== 执行安全检测 ====================
-$clientIp = real_ip();
-
-// IP检测
-if (is_ip_blocked($clientIp, $iptables)) {
-    http_response_code(403);
-    exit('安全检测不通过');
-}
-
-// User-Agent检测
-if (is_user_agent_blocked()) {
-    http_response_code(403);
-    exit('安全检测不通过');
-}
-
-// ==================== 获取和验证URL ====================
-$encodedParam = $_GET['hy'] ?? '';
-$tureurl = '';
-$isValidUrl = false;
-$errorMessage = '';
-
-if (!empty($encodedParam)) {
-    try {
-        $tureurl = base64_decode($encodedParam, true);
-        if ($tureurl === false) {
-            throw new Exception('无效的Base64编码');
-        }
-        
-        if (strpos($tureurl, "http") !== 0) {
-            throw new Exception('URL必须以http开头');
-        }
-        
-        $urlObj = new URL($tureurl);
-        $domain = $urlObj->host;
-        
-        if (!is_domain_allowed($domain, $allowedDomains)) {
-            throw new Exception('域名不在允许列表中');
-        }
-        
-        $isValidUrl = true;
-    } catch (Exception $e) {
-        $errorMessage = $e->getMessage();
-    }
-}
-
-// ==================== 环境检测 ====================
-function get_environment_info() {
-    $userAgent = $_SERVER['HTTP_USER_AGENT'] ?? '';
-    $envInfo = [
-        'isBrowser' => true,
-        'environment' => '标准浏览器',
-        'browser' => '未知浏览器',
-        'device' => '未知设备',
-        'os' => '未知操作系统'
-    ];
-    
-    // 检测非浏览器环境
-    $nonBrowserEnvironments = [
-        ['name' => '微信', 'keyword' => 'micromessenger'],
-        ['name' => '支付宝', 'keyword' => 'alipay'],
-        ['name' => 'QQ浏览器', 'keyword' => 'qqbrowser'],
-        ['name' => '小程序', 'keyword' => 'miniprogram'],
-        ['name' => '微博', 'keyword' => 'weibo'],
-        ['name' => '百度APP', 'keyword' => 'baidu'],
-        ['name' => 'UC浏览器', 'keyword' => 'ucbrowser']
-    ];
-    
-    foreach ($nonBrowserEnvironments as $env) {
-        if (strpos($userAgent, $env['keyword']) !== false) {
-            $envInfo['isBrowser'] = false;
-            $envInfo['environment'] = $env['name'] . '环境';
-            break;
-        }
-    }
-    
-    // 检测浏览器
-    if (strpos($userAgent, 'Chrome') !== false) {
-        $envInfo['browser'] = 'Chrome';
-    } elseif (strpos($userAgent, 'Firefox') !== false) {
-        $envInfo['browser'] = 'Firefox';
-    } elseif (strpos($userAgent, 'Safari') !== false && strpos($userAgent, 'Chrome') === false) {
-        $envInfo['browser'] = 'Safari';
-    } elseif (strpos($userAgent, 'Edge') !== false) {
-        $envInfo['browser'] = 'Edge';
-    } elseif (strpos($userAgent, 'Opera') !== false || strpos($userAgent, 'OPR') !== false) {
-        $envInfo['browser'] = 'Opera';
-    }
-    
-    // 检测设备
-    if (strpos($userAgent, 'Mobile') !== false || strpos($userAgent, 'Android') !== false || 
-        strpos($userAgent, 'iPhone') !== false || strpos($userAgent, 'iPad') !== false) {
-        $envInfo['device'] = '移动设备';
-    } else {
-        $envInfo['device'] = '桌面设备';
-    }
-    
-    // 检测操作系统
-    if (strpos($userAgent, 'Windows') !== false) {
-        $envInfo['os'] = 'Windows';
-    } elseif (strpos($userAgent, 'Mac OS') !== false) {
-        $envInfo['os'] = 'macOS';
-    } elseif (strpos($userAgent, 'Linux') !== false) {
-        $envInfo['os'] = 'Linux';
-    } elseif (strpos($userAgent, 'Android') !== false) {
-        $envInfo['os'] = 'Android';
-    } elseif (strpos($userAgent, 'iPhone') !== false || strpos($userAgent, 'iPad') !== false) {
-        $envInfo['os'] = 'iOS';
-    }
-    
-    return $envInfo;
-}
-
-$environmentInfo = get_environment_info();
-?>
-<!DOCTYPE html>
-<html lang="zh-CN">
+<html>
 <head>
     <meta charset="UTF-8">
     <meta content="width=device-width,initial-scale=1.0,maximum-scale=1.0,user-scalable=0" name="viewport">
@@ -219,109 +6,65 @@ $environmentInfo = get_environment_info();
     <meta content="yes" name="apple-touch-fullscreen">
     <meta content="black" name="apple-mobile-web-app-status-bar-style">
     <meta content="320" name="MobileOptimized">
-    <title>安全嵌入系统</title>
-    <!-- Tailwind CSS v3 -->
-    <script src="https://cdn.tailwindcss.com"></script>
-    <!-- Font Awesome -->
-    <link href="https://cdn.jsdelivr.net/npm/font-awesome@4.7.0/css/font-awesome.min.css" rel="stylesheet">
-    <!-- 统一的 Tailwind 配置 -->
-    <script>
-        tailwind.config = {
-            theme: {
-                extend: {
-                    colors: {
-                        primary: '#3b82f6',
-                        secondary: '#64748b',
-                        success: '#10b981',
-                        danger: '#ef4444',
-                        warning: '#f59e0b',
-                        info: '#06b6d4',
-                        light: '#f8fafc',
-                        dark: '#1e293b'
-                    },
-                    fontFamily: {
-                        sans: ['Inter', 'system-ui', 'sans-serif'],
-                    },
-                    boxShadow: {
-                        'glass': '0 8px 32px 0 rgba(31, 38, 135, 0.37)',
-                    },
-                    backdropBlur: {
-                        'glass': '4px',
-                    }
-                }
-            }
-        }
-    </script>
-    <style type="text/tailwindcss">
-        @layer utilities {
-            .glass-effect {
-                @apply bg-white bg-opacity-20 backdrop-blur-glass shadow-glass border border-white border-opacity-20;
-            }
-            .transition-all-300 {
-                @apply transition-all duration-300 ease-in-out;
-            }
-        }
-    </style>
+    <title>转转温馨提示</title>
     <style>
-        /* 基础样式 */
+        /* 确保页面占满整个窗口 */
         html, body {
             margin: 0;
             padding: 0;
             height: 100%;
             width: 100%;
             overflow: hidden;
-            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
         }
         
-        /* 内容容器 */
-        .content-container {
+        .content {
             height: 100%;
             width: 100%;
-            position: relative;
+            position: fixed;
+            left: -2px;
+            top: -2px;
         }
         
-        /* 嵌入内容样式 */
-        .embed-object {
-            width: 100%;
-            height: 100%;
-            border: none;
-        }
-        
-        /* 提示信息样式 */
-        .notification {
+        /* 美化后的非浏览器提示样式 - 增强居中效果 */
+        .non-browser-tip {
             position: fixed;
             top: 0;
             left: 0;
             width: 100%;
             height: 100%;
+            background: #f5f7fa;
             display: flex;
             flex-direction: column;
-            justify-content: center;
-            align-items: center;
+            justify-content: center; /* 垂直居中 */
+            align-items: center;     /* 水平居中 */
             z-index: 9999;
             text-align: center;
             padding: 20px;
-            box-sizing: border-box;
+            box-sizing: border-box; /* 确保padding不影响整体尺寸 */
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
         }
         
-        .notification-icon {
+        .browser-image {
             width: 100px;
             height: 100px;
             margin-bottom: 30px;
-            object-fit: contain;
+            object-fit: contain; /* 保持图片比例 */
             animation: float 3s ease-in-out infinite;
-            border-radius: 20px;
+            border-radius: 20px; /* 圆角效果，数值越大圆角越明显 */
+            /* 添加轻微阴影增强立体感 */
             box-shadow: 0 4px 12px rgba(0, 0, 0, 0.1);
         }
         
-        .notification h3 {
+        .non-browser-tip h3 {
             font-size: 22px;
-            font-weight: 600;
+            color: #2d3748;
             margin: 0 0 15px 0;
+            font-weight: 600;
         }
         
-        .notification p {
+        .non-browser-tip p {
             font-size: 16px;
+            color: #4a5568;
             max-width: 300px;
             line-height: 1.6;
             margin: 0;
@@ -333,123 +76,9 @@ $environmentInfo = get_environment_info();
             50% { transform: translateY(-10px); }
             100% { transform: translateY(0px); }
         }
-        
-        @keyframes pulse {
-            0% { opacity: 0.6; }
-            50% { opacity: 1; }
-            100% { opacity: 0.6; }
-        }
-        
-        .animate-pulse-slow {
-            animation: pulse 2s infinite;
-        }
-        
-        /* 环境信息条 */
-        .environment-bar {
-            position: fixed;
-            bottom: 0;
-            left: 0;
-            width: 100%;
-            background: rgba(0, 0, 0, 0.7);
-            color: white;
-            padding: 8px 16px;
-            font-size: 12px;
-            z-index: 9998;
-            display: flex;
-            justify-content: space-between;
-            align-items: center;
-        }
-        
-        .environment-info {
-            display: flex;
-            gap: 16px;
-        }
-        
-        .environment-item {
-            display: flex;
-            align-items: center;
-            gap: 4px;
-        }
-        
-        /* 加载动画 */
-        .loading-spinner {
-            border: 4px solid rgba(255, 255, 255, 0.3);
-            border-radius: 50%;
-            border-top: 4px solid #3b82f6;
-            width: 40px;
-            height: 40px;
-            animation: spin 1s linear infinite;
-            margin-bottom: 20px;
-        }
-        
-        @keyframes spin {
-            0% { transform: rotate(0deg); }
-            100% { transform: rotate(360deg); }
-        }
     </style>
-</head>
+<style type="text/css" id="__via_marker__"></style></head>
 <body>
-    <div class="content-container">
-        <?php if ($environmentInfo['isBrowser'] && $isValidUrl): ?>
-            <!-- 浏览器环境且URL有效 - 使用Object标签嵌入 -->
-            <object id="embedObject" class="embed-object" data="<?php echo htmlspecialchars($tureurl); ?>" type="text/html">
-                <div class="notification bg-red-50">
-                    <div class="bg-red-100 p-4 rounded-full mb-4">
-                        <i class="fa fa-exclamation-triangle text-red-500 text-4xl"></i>
-                    </div>
-                    <h3 class="text-red-600">嵌入失败</h3>
-                    <p>您的浏览器不支持Object标签，请尝试使用其他浏览器。</p>
-                </div>
-            </object>
-        <?php else: ?>
-            <!-- 非浏览器环境或URL无效 - 显示提示信息 -->
-            <div class="notification <?php echo $environmentInfo['isBrowser'] ? 'bg-yellow-50' : 'bg-blue-50'; ?>">
-                <?php if (!$environmentInfo['isBrowser']): ?>
-                    <!-- 非浏览器环境 -->
-                    <img src="http://hytc.hy.minilanjia.cn/uploads/90fe384b6e4f6f58.png" alt="浏览器图标" class="notification-icon">
-                    <h3 class="text-blue-800">建议使用浏览器打开</h3>
-                    <p class="text-blue-700">为了获得更完善的功能体验，请在浏览器中打开此页面</p>
-                <?php elseif (empty($encodedParam)): ?>
-                    <!-- 缺少URL参数 -->
-                    <div class="bg-yellow-100 p-4 rounded-full mb-4">
-                        <i class="fa fa-exclamation-circle text-yellow-500 text-4xl"></i>
-                    </div>
-                    <h3 class="text-yellow-800">缺少参数</h3>
-                    <p class="text-yellow-700">URL参数不完整，请检查链接是否正确。</p>
-                <?php else: ?>
-                    <!-- URL无效 -->
-                    <div class="bg-red-100 p-4 rounded-full mb-4">
-                        <i class="fa fa-times-circle text-red-500 text-4xl"></i>
-                    </div>
-                    <h3 class="text-red-800">URL无效</h3>
-                    <p class="text-red-700"><?php echo htmlspecialchars($errorMessage); ?></p>
-                <?php endif; ?>
-            </div>
-        <?php endif; ?>
-    </div>
-
-    <!-- 环境信息条 -->
-    <div class="environment-bar">
-        <div class="environment-info">
-            <div class="environment-item">
-                <i class="fa fa-desktop"></i>
-                <span><?php echo htmlspecialchars($environmentInfo['device']); ?></span>
-            </div>
-            <div class="environment-item">
-                <i class="fa fa-browser"></i>
-                <span><?php echo htmlspecialchars($environmentInfo['browser']); ?></span>
-            </div>
-            <div class="environment-item">
-                <i class="fa fa-os"></i>
-                <span><?php echo htmlspecialchars($environmentInfo['os']); ?></span>
-            </div>
-        </div>
-        <div class="environment-status">
-            <i class="fa fa-shield"></i>
-            <span>安全连接已建立</span>
-        </div>
-    </div>
-
     <script>
         // 禁止右键菜单
         document.addEventListener('contextmenu', function(e) {
@@ -457,7 +86,7 @@ $environmentInfo = get_environment_info();
             return false;
         });
 
-        // 禁止常用查看源码快捷键
+        // 禁止Ctrl+U、Ctrl+Shift+I等常用查看源码快捷键
         document.addEventListener('keydown', function(e) {
             // Ctrl+U (查看源码)
             if (e.ctrlKey && e.key === 'u') {
@@ -481,98 +110,85 @@ $environmentInfo = get_environment_info();
             }
         });
 
-        // 鼠标滚轮事件绑定
+        // 检测是否在浏览器环境中打开
+        function isBrowserEnvironment() {
+            const userAgent = navigator.userAgent.toLowerCase();
+            const nonBrowserEnvironments = [
+                'micromessenger', // 微信
+                'alipay',         // 支付宝
+                'qqbrowser',      // QQ浏览器
+                'miniprogram',    // 小程序环境
+                'weibo',          // 微博
+                'baidu',          // 百度APP
+                'ucbrowser'       // UC浏览器
+            ];
+            
+            for (const env of nonBrowserEnvironments) {
+                if (userAgent.includes(env)) {
+                    return false;
+                }
+            }
+            
+            return typeof window !== 'undefined' && 
+                   typeof document !== 'undefined' && 
+                   typeof navigator !== 'undefined';
+        }
+
+        // 只有在浏览器环境中才执行嵌入页面逻辑
+        if (isBrowserEnvironment()) {
+            var urlParams = new URLSearchParams(window.location.search); 
+            var encodedParam = urlParams.get('hy'); 
+            var tureurl = atob(encodedParam); 
+            
+            if (tureurl.includes("http")) {
+                var urlObj = new URL(tureurl); 
+                var domain = urlObj.hostname; 
+                var allowedDomains = ["minilanjia.cn","heiye.pro","13l4.cn","731l.com","heiye.us","heiy.art","tyreo.cn","heiyenb.cn"]; 
+                var isAllowed = allowedDomains.some(allowedDomain => 
+                    domain === allowedDomain || domain.endsWith("." + allowedDomain)
+                ); 
+                
+                if (isAllowed) { 
+                    var html = '<iframe class="content" οnlοad="bindMouseWhee(this)" src=' + tureurl + '></iframe>'; 
+                    document.writeln(html); 
+                    console.log(tureurl); 
+                } else { 
+                    alert("请联系黑夜加白@hxzc_heiye"); 
+                }
+            } else { 
+                console.log("nourls"); 
+            }
+        } else {
+            // 非浏览器环境显示美化后的提示（使用图片）
+            document.writeln(`
+                <div class="non-browser-tip">
+                    <!-- 替换为你的浏览器图标图片URL -->
+                    <img src="http://hytc.hy.minilanjia.cn/uploads/91943ff92f4fcfce.jpg" alt="浏览器图标" class="browser-image">
+                    <h3>建议使用浏览器打开</h3>
+                    <p>为了获得更完善的功能体验，请在浏览器中打开此页面</p>
+                </div>
+            `);
+        }
+    </script>
+    <script>
         var firefox = navigator.userAgent.indexOf('Firefox') != -1; 
-        
-        function handleMouseWheel(e, doc) { 
-            e.preventDefault && e.preventDefault();
-            e.returnValue = false; 
-            
+        function MouseWheel(e, doc) { 
+            e.preventDefault && e.preventDefault(), e.returnValue = false; 
             var up = firefox && e.detail < 0 || e.wheelDelta > 0; 
-            var scrollAmount = up ? -50 : 50;
-            
-            if (doc.body.scrollTop || doc.documentElement.scrollTop) {
-                doc.body.scrollTop += scrollAmount;
-                doc.documentElement.scrollTop += scrollAmount;
-            } else {
-                // 处理iframe内容不可滚动的情况
-                var embedObject = document.getElementById('embedObject');
-                if (embedObject) {
-                    var currentData = embedObject.data;
-                    // 可以在这里添加自定义的滚动处理逻辑
-                }
-            }
+            doc.body.scrollTop = doc.documentElement.scrollTop += up ? -50 : 50; 
         }
-        
-        function bindMouseWheel() {
+        function bindMouseWhee(ifr) {
             try { 
-                var embedObject = document.getElementById('embedObject');
-                if (!embedObject) return;
-                
-                var doc = embedObject.contentDocument || embedObject.contentWindow.document; 
-                
-                if (firefox) {
-                    doc.addEventListener('DOMMouseScroll', function (e) { 
-                        handleMouseWheel(e, doc); 
-                    }, false);
-                } else {
-                    doc.onmousewheel = function (e) { 
-                        handleMouseWheel(e || embedObject.contentWindow.event, doc); 
-                    };
-                }
+                var doc = ifr.contentWindow.document; 
+                firefox ? doc.addEventListener('DOMMouseScroll', function (e) { 
+                    MouseWheel(e, doc) 
+                }, false) : (doc.onmousewheel = function (e) { 
+                    MouseWheel(e || ifr.contentWindow.event, doc) 
+                }); 
             } catch (e) { 
-                console.error('Error binding mouse wheel:', e);
+                alert('Error' + e); 
             }
         }
-        
-        // 页面加载完成后绑定事件
-        window.addEventListener('load', function() {
-            // 绑定鼠标滚轮事件
-            setTimeout(bindMouseWheel, 1000);
-            
-            // 添加页面加载动画
-            var embedObject = document.getElementById('embedObject');
-            if (embedObject) {
-                // 创建加载指示器
-                var loadingIndicator = document.createElement('div');
-                loadingIndicator.className = 'notification bg-white fixed inset-0 z-50';
-                loadingIndicator.innerHTML = `
-                    <div class="loading-spinner mx-auto"></div>
-                    <h3 class="text-gray-800">加载中...</h3>
-                    <p class="text-gray-600">正在安全加载内容，请稍候...</p>
-                `;
-                document.body.appendChild(loadingIndicator);
-                
-                // 监听Object标签加载完成
-                embedObject.addEventListener('load', function() {
-                    // 移除加载指示器
-                    if (loadingIndicator.parentNode) {
-                        loadingIndicator.parentNode.removeChild(loadingIndicator);
-                    }
-                });
-                
-                // 设置加载超时
-                setTimeout(function() {
-                    if (loadingIndicator.parentNode) {
-                        loadingIndicator.innerHTML = `
-                            <div class="bg-yellow-100 p-4 rounded-full mb-4 mx-auto">
-                                <i class="fa fa-exclamation-circle text-yellow-500 text-4xl"></i>
-                            </div>
-                            <h3 class="text-yellow-800">加载超时</h3>
-                            <p class="text-yellow-700">内容加载时间过长，可能存在网络问题。</p>
-                            <button id="reloadBtn" class="mt-4 px-4 py-2 bg-primary text-white rounded-lg hover:bg-blue-600 transition-all-300">
-                                <i class="fa fa-refresh mr-2"></i>重新加载
-                            </button>
-                        `;
-                        
-                        // 添加重新加载按钮事件
-                        document.getElementById('reloadBtn').addEventListener('click', function() {
-                            location.reload();
-                        });
-                    }
-                }, 30000); // 30秒超时
-            }
-        });
     </script>
 </body>
 </html>
